@@ -7,14 +7,13 @@ import (
 
 	"github.com/golang/glog"
 	"github.com/huydinhle/kube-controller-demo/common"
+	api_v1 "k8s.io/api/core/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	lister_v1 "k8s.io/client-go/listers/core/v1"
-	"k8s.io/client-go/pkg/api/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
@@ -51,10 +50,11 @@ func main() {
 }
 
 type rebootController struct {
-	client     kubernetes.Interface
-	nodeLister lister_v1.NodeLister
-	informer   cache.Controller
-	queue      workqueue.RateLimitingInterface
+	client kubernetes.Interface
+	// nodeLister      lister_v1.NodeLister
+	namespaceLister lister_v1.NamespaceLister
+	informer        cache.SharedIndexInformer
+	queue           workqueue.RateLimitingInterface
 }
 
 func newRebootController(client kubernetes.Interface) *rebootController {
@@ -63,49 +63,68 @@ func newRebootController(client kubernetes.Interface) *rebootController {
 		queue:  workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
 	}
 
-	indexer, informer := cache.NewIndexerInformer(
+	informer := cache.NewSharedIndexInformer(
 		&cache.ListWatch{
 			ListFunc: func(lo meta_v1.ListOptions) (runtime.Object, error) {
 				// We do not add any selectors because we want to watch all nodes.
 				// This is so we can determine the total count of "unavailable" nodes.
 				// However, this could also be implemented using multiple informers (or better, shared-informers)
-				return client.Core().Nodes().List(lo)
+				return client.CoreV1().Namespaces().List(lo)
 			},
 			WatchFunc: func(lo meta_v1.ListOptions) (watch.Interface, error) {
-				return client.Core().Nodes().Watch(lo)
+				return client.CoreV1().Namespaces().Watch(lo)
 			},
 		},
 		// The types of objects this informer will return
-		&v1.Node{},
+		&api_v1.Namespace{},
 		// The resync period of this object. This will force a re-queue of all cached objects at this interval.
 		// Every object will trigger the `Updatefunc` even if there have been no actual updates triggered.
 		// In some cases you can set this to a very high interval - as you can assume you will see periodic updates in normal operation.
 		// The interval is set low here for demo purposes.
 		10*time.Second,
 		// Callback Functions to trigger on add/update/delete
-		cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				if key, err := cache.MetaNamespaceKeyFunc(obj); err == nil {
-					rc.queue.Add(key)
-				}
-			},
-			UpdateFunc: func(old, new interface{}) {
-				if key, err := cache.MetaNamespaceKeyFunc(new); err == nil {
-					rc.queue.Add(key)
-				}
-			},
-			DeleteFunc: func(obj interface{}) {
-				if key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj); err == nil {
-					rc.queue.Add(key)
-				}
-			},
-		},
+		// cache.ResourceEventHandlerFuncs{
+		// 	AddFunc: func(obj interface{}) {
+		// 		if key, err := cache.MetaNamespaceKeyFunc(obj); err == nil {
+		// 			rc.queue.Add(key)
+		// 		}
+		// 	},
+		// 	UpdateFunc: func(old, new interface{}) {
+		// 		if key, err := cache.MetaNamespaceKeyFunc(new); err == nil {
+		// 			rc.queue.Add(key)
+		// 		}
+		// 	},
+		// 	DeleteFunc: func(obj interface{}) {
+		// 		if key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj); err == nil {
+		// 			rc.queue.Add(key)
+		// 		}
+		// 	},
+		// },
 		cache.Indexers{},
 	)
 
+	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			if key, err := cache.MetaNamespaceKeyFunc(obj); err == nil {
+				rc.queue.Add(key)
+			}
+		},
+		// UpdateFunc: func(old, new interface{}) {
+		// 	if key, err := cache.MetaNamespaceKeyFunc(new); err == nil {
+		// 		rc.queue.Add(key)
+		// 	}
+		// },
+		// DeleteFunc: func(obj interface{}) {
+		// 	if key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj); err == nil {
+		// 		rc.queue.Add(key)
+		// 	}
+		// },
+	})
+
 	rc.informer = informer
 	// NodeLister avoids some boilerplate code (e.g. convert runtime.Object to *v1.node)
-	rc.nodeLister = lister_v1.NewNodeLister(indexer)
+	// rc.nodeLister = lister_v1.NewNodeLister(indexer)
+	rc.namespaceLister = lister_v1.NewNamespaceLister(informer.GetIndexer())
 
 	return rc
 }
@@ -152,41 +171,44 @@ func (c *rebootController) processNext() bool {
 }
 
 func (c *rebootController) process(key string) error {
-	node, err := c.nodeLister.Get(key)
+	namespace, err := c.namespaceLister.Get(key)
 	if err != nil {
-		return fmt.Errorf("failed to retrieve node by key %q: %v", key, err)
+		return fmt.Errorf("failed to retrieve namespace by key %q: %v", key, err)
 	}
 
-	glog.V(4).Infof("Received update of node: %s", node.GetName())
-	if node.Annotations == nil {
-		return nil // If node has no annotations, then it doesn't need a reboot
-	}
+	glog.V(4).Infof("Received update of namespace: %s", namespace.GetName())
 
-	if _, ok := node.Annotations[common.RebootNeededAnnotation]; !ok {
-		return nil // Node does not need reboot
-	}
+	secretClient := c.client.CoreV1().Secrets("kube-system")
 
-	// Determine if we should reboot based on maximum number of unavailable nodes
-	unavailable, err := c.unavailableNodeCount()
+	secret, err := secretClient.Get("raptor-dtr-ro", meta_v1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("Failed to determine number of unavailable nodes: %v", err)
+		return err
 	}
+	secret.Namespace = namespace.GetName()
+	secret.SelfLink = ""
+	secret.UID = ""
+	secret.ResourceVersion = ""
+	secret.CreationTimestamp = meta_v1.Time{}
+	glog.V(4).Infof("The namespace is: %s", secret.Namespace)
 
-	if unavailable >= maxUnavailable {
-		// TODO(aaron): We might want this case to retry indefinitely. Could create a specific error an check in handleErr()
-		return fmt.Errorf("Too many nodes unvailable (%d/%d). Skipping reboot of %s", unavailable, maxUnavailable, node.Name)
-	}
+	secretClient = c.client.CoreV1().Secrets(secret.Namespace)
+	_, err = secretClient.Create(secret)
 
-	// We should not modify the cache object directly, so we make a copy first
-	nodeCopy, err := common.CopyObjToNode(node)
 	if err != nil {
-		return fmt.Errorf("Failed to make copy of node: %v", err)
+		return err
 	}
 
-	glog.Infof("Marking node %s for reboot", node.Name)
-	nodeCopy.Annotations[common.RebootAnnotation] = ""
-	if _, err := c.client.Core().Nodes().Update(nodeCopy); err != nil {
-		return fmt.Errorf("Failed to set %s annotation: %v", common.RebootAnnotation, err)
+	//print configmap for fun
+	cmClient := c.client.CoreV1().ConfigMaps("kube-system")
+
+	configMap, err := cmClient.Get("test-config", meta_v1.GetOptions{})
+	if err != nil {
+		return err
+	}
+
+	glog.V(4).Infof("Printing the damn configmaps")
+	for _, v := range configMap.Data {
+		glog.V(4).Infof("The Data is: %s", v)
 	}
 	return nil
 }
@@ -212,37 +234,4 @@ func (c *rebootController) handleErr(err error, key interface{}) {
 
 	c.queue.Forget(key)
 	glog.Errorf("Dropping node %q out of the queue: %v", key, err)
-}
-
-func (c *rebootController) unavailableNodeCount() (int, error) {
-	nodes, err := c.nodeLister.List(labels.Everything())
-	if err != nil {
-		return 0, err
-	}
-	var unavailable int
-	for _, n := range nodes {
-		if nodeIsRebooting(n) {
-			unavailable++
-			continue
-		}
-		for _, c := range n.Status.Conditions {
-			if c.Type == v1.NodeReady && c.Status == v1.ConditionFalse {
-				unavailable++
-			}
-		}
-	}
-	return unavailable, nil
-}
-
-func nodeIsRebooting(n *v1.Node) bool {
-	// Check if node is marked for reeboot-in-progress
-	if n.Annotations == nil {
-		return false // No annotations - not marked as needing reboot
-	}
-	if _, ok := n.Annotations[common.RebootInProgressAnnotation]; ok {
-		return true
-	}
-	// Check if node is already marked for immediate reboot
-	_, ok := n.Annotations[common.RebootAnnotation]
-	return ok
 }

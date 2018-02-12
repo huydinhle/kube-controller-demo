@@ -67,13 +67,13 @@
 
 
 [[constraint]]
-  name = "github.com/coreos/go-systemd"
-  version = "14.0.0"
-
-[[constraint]]
-  branch = "master"
   name = "k8s.io/apimachinery"
+  version = "kubernetes-1.8.6"
 
 [[constraint]]
   name = "k8s.io/client-go"
-  version = "3.0.0-beta.0"
+  version = "5.0.1"
+
+[[constraint]]
+  name = "k8s.io/api"
+  version = "kubernetes-1.8.6"

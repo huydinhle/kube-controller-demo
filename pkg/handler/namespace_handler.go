@@ -28,22 +28,37 @@ type NamespaceHandler struct {
 }
 
 // NewNameSpaceHandler return a handler that help us to manage Namespace
-func NewNameSpaceHandler() {
+func NewNameSpaceHandler(label, sourceNamespace string, client kubernetes.Interface) (NamespaceHandler, error) {
+	configmaps := getConfigMaps(label, sourceNamespace, client)
+
+	//get namespace based on label
+	namespaces := nil
 
 	// Load in all the configmaps from kube-system with the tag of the new namespace from kube-system
 
 	// Generate the client, pass in client
+	return NameSpaceHandler{
+		client:     client,
+		configmaps: configmaps,
+		namespaces: namespaces,
+	}
 }
 
-func (nh *NamespaceHandler) ProcessNamespace() error {
+func (nh *NamespaceHandler) ProcessNamespace() {
 
 	// Make sure the namespace have the kamaji-resource-controller labels, return nil and do nothing if they don't
 
 	// go through each and every configmaps , fetch out the yaml files one by one, then install them into the new namespace
 	// based on their types, right now we support configmaps and secrets
 
-	for k, v := range nh.namespaces.Items {
-		for k, v := range nh.configmaps.Items {
+	for _, namespace := range nh.namespaces.Items {
+		for _, configmap := range nh.configmaps.Items {
+			err := applyConfigMapToNameSpace(namespace.Name(), client, configmap)
+			if err != nil {
+				// log out more info
+				glog.Info("can't apply configmap cluster ")
+			}
+			glog.Info("succesfully apply the configmap to the cluster")
 		}
 	}
 }
@@ -80,9 +95,9 @@ func applyConfigMapToNameSpace(namespace string, client kubernetes.Interface, cm
 }
 
 // get all the configmaps that has the labels list
-func getConfigMaps(label string, namespace string, client kubernetes.Interface) (*api_v1.ConfigMapList, error) {
+func getConfigMaps(label string, sourceNamespace string, client kubernetes.Interface) (*api_v1.ConfigMapList, error) {
 
-	cmClient := client.CoreV1().ConfigMaps("kube-system")
+	cmClient := client.CoreV1().ConfigMaps(sourceNamespace)
 
 	cmList, err := cmClient.List(meta_v1.ListOptions{
 		LabelSelecto: label,

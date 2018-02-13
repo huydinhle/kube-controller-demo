@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/golang/glog"
-	"github.com/huydinhle/kube-controller-demo/common"
+	"github.com/huydinhle/kube-controller-demo/pkg/common"
+	"github.com/huydinhle/kube-controller-demo/pkg/handler"
 	api_v1 "k8s.io/api/core/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -77,29 +78,8 @@ func newRebootController(client kubernetes.Interface) *rebootController {
 		},
 		// The types of objects this informer will return
 		&api_v1.Namespace{},
-		// The resync period of this object. This will force a re-queue of all cached objects at this interval.
-		// Every object will trigger the `Updatefunc` even if there have been no actual updates triggered.
-		// In some cases you can set this to a very high interval - as you can assume you will see periodic updates in normal operation.
-		// The interval is set low here for demo purposes.
+		// Change interval into 10 minutes
 		10*time.Second,
-		// Callback Functions to trigger on add/update/delete
-		// cache.ResourceEventHandlerFuncs{
-		// 	AddFunc: func(obj interface{}) {
-		// 		if key, err := cache.MetaNamespaceKeyFunc(obj); err == nil {
-		// 			rc.queue.Add(key)
-		// 		}
-		// 	},
-		// 	UpdateFunc: func(old, new interface{}) {
-		// 		if key, err := cache.MetaNamespaceKeyFunc(new); err == nil {
-		// 			rc.queue.Add(key)
-		// 		}
-		// 	},
-		// 	DeleteFunc: func(obj interface{}) {
-		// 		if key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj); err == nil {
-		// 			rc.queue.Add(key)
-		// 		}
-		// 	},
-		// },
 		cache.Indexers{},
 	)
 
@@ -109,11 +89,11 @@ func newRebootController(client kubernetes.Interface) *rebootController {
 				rc.queue.Add(key)
 			}
 		},
-		// UpdateFunc: func(old, new interface{}) {
-		// 	if key, err := cache.MetaNamespaceKeyFunc(new); err == nil {
-		// 		rc.queue.Add(key)
-		// 	}
-		// },
+		UpdateFunc: func(old, new interface{}) {
+			if key, err := cache.MetaNamespaceKeyFunc(new); err == nil {
+				rc.queue.Add(key)
+			}
+		},
 		// DeleteFunc: func(obj interface{}) {
 		// 	if key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj); err == nil {
 		// 		rc.queue.Add(key)
@@ -171,6 +151,8 @@ func (c *rebootController) processNext() bool {
 }
 
 func (c *rebootController) process(key string) error {
+	label := "kamaji-resource-controller=true"
+	sourceNamespace := "kube-system"
 	namespace, err := c.namespaceLister.Get(key)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve namespace by key %q: %v", key, err)
@@ -178,39 +160,9 @@ func (c *rebootController) process(key string) error {
 
 	glog.V(4).Infof("Received update of namespace: %s", namespace.GetName())
 
-	secretClient := c.client.CoreV1().Secrets("kube-system")
+	nsHandler := handler.NewNamespaceHandler(label, sourceNamespace, c.client)
 
-	secret, err := secretClient.Get("raptor-dtr-ro", meta_v1.GetOptions{})
-	if err != nil {
-		return err
-	}
-	secret.Namespace = namespace.GetName()
-	secret.SelfLink = ""
-	secret.UID = ""
-	secret.ResourceVersion = ""
-	secret.CreationTimestamp = meta_v1.Time{}
-	glog.V(4).Infof("The namespace is: %s", secret.Namespace)
-
-	secretClient = c.client.CoreV1().Secrets(secret.Namespace)
-	_, err = secretClient.Create(secret)
-
-	if err != nil {
-		return err
-	}
-
-	//print configmap for fun
-	cmClient := c.client.CoreV1().ConfigMaps("kube-system")
-
-	configMap, err := cmClient.Get("test-config", meta_v1.GetOptions{})
-	if err != nil {
-		return err
-	}
-
-	glog.V(4).Infof("Printing the damn configmaps")
-	for _, v := range configMap.Data {
-		glog.V(4).Infof("The Data is: %s", v)
-	}
-	return nil
+	return nsHandler.ProcessNamespace(key)
 }
 
 func (c *rebootController) handleErr(err error, key interface{}) {

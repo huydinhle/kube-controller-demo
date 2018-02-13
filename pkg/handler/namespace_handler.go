@@ -1,25 +1,14 @@
 package handler
 
 import (
-	"flag"
 	"fmt"
-	"time"
 
 	"github.com/golang/glog"
-	"github.com/huydinhle/kube-controller-demo/common"
 	api_v1 "k8s.io/api/core/v1"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
-	lister_v1 "k8s.io/client-go/listers/core/v1"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/util/workqueue"
 )
-
-//Namespace handler add stuff into the namespace
 
 type NamespaceHandler struct {
 	client     kubernetes.Interface
@@ -28,52 +17,62 @@ type NamespaceHandler struct {
 }
 
 // NewNameSpaceHandler return a handler that help us to manage Namespace
-func NewNameSpaceHandler(label, sourceNamespace string, client kubernetes.Interface) (NamespaceHandler, error) {
-	configmaps := getConfigMaps(label, sourceNamespace, client)
+func NewNamespaceHandler(label, sourceNamespace string, client kubernetes.Interface) (*NamespaceHandler, error) {
+	// Load in all the configmaps from kube-system with the tag of the new namespace from kube-system
+	configmaps, err := getConfigMaps(label, sourceNamespace, client)
+	if err != nil {
+		// handle error here
+		return nil, err
+	}
 
 	//get namespace based on label
-	namespaces := nil
+	nsClient := client.CoreV1().Namespaces()
+	namespaces, err := nsClient.List(meta_v1.ListOptions{
+		LabelSelector: label,
+	})
+	if err != nil {
+		//handle error here
+		return nil, err
+	}
 
-	// Load in all the configmaps from kube-system with the tag of the new namespace from kube-system
-
-	// Generate the client, pass in client
-	return NameSpaceHandler{
+	// Generate the Handler, using the client that got passed in
+	return &NamespaceHandler{
 		client:     client,
 		configmaps: configmaps,
 		namespaces: namespaces,
-	}
+	}, nil
 }
 
-func (nh *NamespaceHandler) ProcessNamespace() {
+func (nh *NamespaceHandler) ProcessNamespace(namespace string) error {
 
 	// Make sure the namespace have the kamaji-resource-controller labels, return nil and do nothing if they don't
 
 	// go through each and every configmaps , fetch out the yaml files one by one, then install them into the new namespace
 	// based on their types, right now we support configmaps and secrets
 
-	for _, namespace := range nh.namespaces.Items {
-		for _, configmap := range nh.configmaps.Items {
-			err := applyConfigMapToNameSpace(namespace.Name(), client, configmap)
-			if err != nil {
-				// log out more info
-				glog.Info("can't apply configmap cluster ")
-			}
-			glog.Info("succesfully apply the configmap to the cluster")
+	var err error
+	for _, configmap := range nh.configmaps.Items {
+		err = applyConfigMapToNameSpace(namespace, nh.client, configmap)
+		if err != nil {
+			// log out more info
+			glog.Infof("can't apply configmap %s cluster . The reason is  %v", configmap.Name, err)
 		}
+		glog.Infof("succesfully apply the configmap %s to the cluster", configmap.Name)
 	}
+	return err
 }
 
-func applyConfigMapToNameSpace(namespace string, client kubernetes.Interface, cm api_v1.ConfigMap) err {
+func applyConfigMapToNameSpace(namespace string, client kubernetes.Interface, cm api_v1.ConfigMap) error {
 	for _, f := range cm.Data {
 
 		// parse the yaml into an object
 
 		// have a switch statement.
 		decode := scheme.Codecs.UniversalDeserializer().Decode
-		obj, groupVersionKind, err := decode([]byte(f), nil, nil)
+		obj, _, err := decode([]byte(f), nil, nil)
 
 		if err != nil {
-			log.Fatal(fmt.Sprintf("Error while decoding YAML object. Err was: %s", err))
+			glog.Fatal(fmt.Sprintf("Error while decoding YAML object. Err was: %s", err))
 		}
 
 		// now use switch over the type of the object
@@ -81,11 +80,15 @@ func applyConfigMapToNameSpace(namespace string, client kubernetes.Interface, cm
 		switch o := obj.(type) {
 		case *api_v1.ConfigMap:
 			cmClient := client.CoreV1().ConfigMaps(namespace)
-			_, err := cmClient.Create(o)
+			_, err := cmClient.Create(&api_v1.ConfigMap(*o))
+			// _, err := cmClient.Create(*o)
 			if err != nil {
 			}
-		case *api_v1.Secret:
-			cmClient := client.CoreV1().ConfigMaps(namespace)
+		// case *api_v1.Secret:
+		// 	secretClient := client.CoreV1().ConfigMaps(namespace)
+		// 	_, err := secretClient.Create(*api_v1.Secret(o))
+		// 	if err != nil {
+		// 	}
 		default:
 			//o is unknown for us
 		}
@@ -100,11 +103,11 @@ func getConfigMaps(label string, sourceNamespace string, client kubernetes.Inter
 	cmClient := client.CoreV1().ConfigMaps(sourceNamespace)
 
 	cmList, err := cmClient.List(meta_v1.ListOptions{
-		LabelSelecto: label,
+		LabelSelector: label,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	return cmList
+	return cmList, nil
 }

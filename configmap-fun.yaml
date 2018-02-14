@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: game-config
+  namespace: kube-system
+  labels:
+    kamaji-resource-controller: "true"
+data:
+  test.yaml: |
+    apiVersion: v1
+    data:
+      KUBERNETES_LABELS_APP: commerce-meta
+    kind: ConfigMap
+    metadata:
+      annotations:
+        created-by: sciron
+      labels:
+        created-by: sciron
+      name: sciron-cm
+      namespace: commerce-meta

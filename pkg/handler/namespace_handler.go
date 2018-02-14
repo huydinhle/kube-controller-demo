@@ -80,6 +80,7 @@ func applyConfigMapToNameSpace(namespace string, client kubernetes.Interface, cm
 		case "ConfigMap":
 			glog.Infof("Let's create some configmap yoooo")
 			cm := obj.(*api_v1.ConfigMap)
+			cm.Namespace = ""
 
 			cmClient := client.CoreV1().ConfigMaps(namespace)
 			_, err = cmClient.Create(cm)

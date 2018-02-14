@@ -69,28 +69,26 @@ func applyConfigMapToNameSpace(namespace string, client kubernetes.Interface, cm
 
 		// have a switch statement.
 		decode := scheme.Codecs.UniversalDeserializer().Decode
-		obj, _, err := decode([]byte(f), nil, nil)
+		glog.Infof("file is %s", string(f))
+		obj, groupVersionKind, err := decode([]byte(f), nil, nil)
 
 		if err != nil {
 			glog.Fatal(fmt.Sprintf("Error while decoding YAML object. Err was: %s", err))
 		}
 
-		// now use switch over the type of the object
-		// and match each type-case
-		switch o := obj.(type) {
-		case *api_v1.ConfigMap:
+		switch groupVersionKind.Kind {
+		case "ConfigMap":
+			glog.Infof("Let's create some configmap yoooo")
+			cm := obj.(*api_v1.ConfigMap)
+
 			cmClient := client.CoreV1().ConfigMaps(namespace)
-			_, err := cmClient.Create(&api_v1.ConfigMap(*o))
+			_, err = cmClient.Create(cm)
 			// _, err := cmClient.Create(*o)
 			if err != nil {
+				glog.Infof("Creating configmap failed. Reason is %s", err)
 			}
-		// case *api_v1.Secret:
-		// 	secretClient := client.CoreV1().ConfigMaps(namespace)
-		// 	_, err := secretClient.Create(*api_v1.Secret(o))
-		// 	if err != nil {
-		// 	}
 		default:
-			//o is unknown for us
+			glog.Infof("Failed to read the damn configmap")
 		}
 	}
 
@@ -99,7 +97,6 @@ func applyConfigMapToNameSpace(namespace string, client kubernetes.Interface, cm
 
 // get all the configmaps that has the labels list
 func getConfigMaps(label string, sourceNamespace string, client kubernetes.Interface) (*api_v1.ConfigMapList, error) {
-
 	cmClient := client.CoreV1().ConfigMaps(sourceNamespace)
 
 	cmList, err := cmClient.List(meta_v1.ListOptions{

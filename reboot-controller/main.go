@@ -160,7 +160,7 @@ func (c *rebootController) process(key string) error {
 
 	glog.V(4).Infof("Received update of namespace: %s", namespace.GetName())
 
-	nsHandler := handler.NewNamespaceHandler(label, sourceNamespace, c.client)
+	nsHandler, err := handler.NewNamespaceHandler(label, sourceNamespace, c.client)
 
 	return nsHandler.ProcessNamespace(key)
 }
